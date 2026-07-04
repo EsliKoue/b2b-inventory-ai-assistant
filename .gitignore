@@ -1,0 +1,50 @@
+# --- PYTHON (À la racine) ---
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+
+# --- BASE DE DONNÉES LOCALES ---
+*.db
+*.sqlite3
+
+# --- NODE / REACT (Dans le sous-dossier frontend) ---
+frontend/node_modules/
+frontend/dist/
+.env.local
+.env
+
+# --- BASE DE DONNÉES LOCALES ---
+# On ignore la base SQLite locale pour éviter d'écraser 
+# les données de production avec tes tests locaux.
+*.db
+*.sqlite3
+
+# --- NODE / REACT (Frontend) ---
+node_modules/
+/dist
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# --- SÉCURITÉ & CLÉS API ---
+.env
+.env.*
+secrets.json
+
+# --- SYSTÈME ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+.idea/
+.vscode/

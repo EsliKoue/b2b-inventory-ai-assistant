@@ -1,0 +1,51 @@
+# 🤖 Assistant Technico-Commercial B2B - IT & WASH
+
+Une application Full-Stack combinant la puissance de **FastAPI**, **React (Vite/Tailwind)** et l'intelligence de **Gemini 2.5-Flash** pour automatiser l'interrogation de catalogues d'équipements et la supervision opérationnelle.
+
+---
+
+## 🌟 Fonctionnalités
+
+- **Analyse de Catalogue en Temps Réel** : Extraction dynamique des prix (FCFA), stocks et délais depuis un fichier Excel (`product_catalog.xlsx`).
+- **Historique Persistant** : Sauvegarde structurée des sessions et messages via une base de données **SQLite**.
+- **Interface Responsive** : Layout moderne s'adaptant parfaitement aux ordinateurs de bureau et aux smartphones (Sidebar rétractable).
+- **Espace Admin Sécurisé** : Tableau de bord protégé par code d'accès pour analyser les requêtes journalières et les statistiques de flux.
+
+---
+
+## 🏗️ Architecture du Projet
+
+```text
+├── backend/
+│   ├── main.py                # Serveur FastAPI & Logique Métier / AI
+│   ├── requirements.txt       # Dépendances Python
+│   ├── Dockerfile             # Configuration pour Hugging Face Spaces
+│   └── product_catalog.xlsx   # Base de données produits Excel
+└── src/                       # Code source Frontend React
+    ├── components/
+    │   └── Chatbot.jsx        # Interface utilisateur & Panel Admin
+    ├── App.jsx                # Point d'entrée applicatif
+    └── main.jsx
+```
+
+🚀 Installation Locale
+
+1. Cloner le projet
+
+git clone [https://github.com/VOTRE_COMPTE/b2b-inventory-ai-assistant.git](https://github.com/VOTRE_COMPTE/b2b-inventory-ai-assistant.git)
+cd b2b-inventory-ai-assistant
+
+2. Lancer le Backend (FastAPI)
+
+cd backend
+python -m venv venv
+source venv/bin/activate # Sur Windows: venv\Scripts\activate
+pip install -r requirements.txt
+export GEMINI_API_KEY="votre_cle_api"
+uvicorn main:app --reload
+
+3. Lancer le Frontend (React)
+   À la racine du projet :
+
+npm install
+npm run dev

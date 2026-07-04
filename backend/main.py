@@ -53,7 +53,15 @@ def init_db():
 init_db()
 
 # Initialisation du client Gemini (Assure-toi que GEMINI_API_KEY est dans ton .env)
-client = genai.Client()
+# Initialisation sécurisée du client Gemini pour Hugging Face
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    print("❌ [LOGS SERVEUR] ALERTE : La variable GEMINI_API_KEY est introuvable dans l'environnement du conteneur !")
+    client = None
+else:
+    print("✅ [LOGS SERVEUR] SUCCÈS : Clé GEMINI_API_KEY détectée avec succès.")
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Outil d'interrogation du catalogue Excel
 def interroger_catalogue_excel(nom_produit: str) -> str:
@@ -116,9 +124,16 @@ def get_session_messages(session_id: str):
 
 @app.post("/api/chat")
 def chat_endpoint(req: ChatRequest):
+    # Sécurité si la clé API est manquante
+    if client is None:
+        raise HTTPException(
+            status_code=500, 
+            detail="Le service Gemini n'est pas initialisé. Vérifiez que la variable GEMINI_API_KEY est correctement configurée dans les Secrets de votre Space Hugging Face."
+        )
+
     now_str = datetime.now().isoformat()
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    # ... (le reste de ton code actuel reste strictement inchangé)
     
     # 1. Vérifier ou créer la session
     cursor.execute("SELECT id FROM sessions WHERE id = ?", (req.session_id,))

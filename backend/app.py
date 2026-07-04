@@ -1,101 +1,241 @@
 import os
+import sqlite3
+from datetime import datetime
+from typing import List, Optional
 import pandas as pd
-import streamlit as st
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
-from google.genai.errors import ServerError
 
-# 1. Configuration de la page Web Streamlit
-st.set_page_config(
-    page_title="Agent d'Inventaire B2B",
-    page_icon="📦",
-    layout="centered"
+# Initialisation de FastAPI
+app = FastAPI(title="API Assistant B2B Synchrone")
+
+# Configuration CORS pour autoriser ton frontend React
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En production, spécifie l'URL exacte (ex: https://mon-app.vercel.app)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-st.title("📦 Assistant d'Inventaire B2B")
-st.write("Posez vos questions sur la disponibilité, les prix et les délais de livraison des équipements.")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "chat_history.db")
 
-# 2. Initialisation du client Gemini (Mise en cache pour éviter les reconnexions)
-@st.cache_resource
-def initialiser_client():
-    # Récupère automatiquement la variable $env:GEMINI_API_KEY du terminal
-    return genai.Client()
+# Init de la base de données SQLite
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    # Table des sessions de chat
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            titre TEXT,
+            updated_at TEXT
+        )
+    """)
+    # Table des messages
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            role TEXT,
+            text TEXT,
+            timestamp TEXT,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-try:
-    client = initialiser_client()
-except Exception as e:
-    st.error("Erreur de configuration de la clé API. Assurez-vous d'avoir défini $env:GEMINI_API_KEY")
+init_db()
 
-# 3. L'Outil local connecté au fichier Excel
-def verifier_stock_et_prix(nom_produit: str) -> str:
-    """
-    Vérifie la disponibilité, le prix et le délai de livraison d'un produit spécifique 
-    dans le catalogue d'inventaire Excel de l'entreprise.
-    """
-    fichier_excel = "product_catalog.xlsx"
+# Initialisation du client Gemini (Assure-toi que GEMINI_API_KEY est dans ton .env)
+client = genai.Client()
+
+# Outil d'interrogation du catalogue Excel
+def interroger_catalogue_excel(nom_produit: str) -> str:
+    fichier_excel = os.path.join(BASE_DIR, "product_catalog.xlsx")
     if not os.path.exists(fichier_excel):
-        return "Erreur technique : Le catalogue Excel 'product_catalog.xlsx' est introuvable."
-    
+        return "Erreur : La base de données product_catalog.xlsx est introuvable."
     try:
         df = pd.read_excel(fichier_excel)
         df_clean = df.copy()
-        df_clean['Nom Produit Clean'] = df_clean['Nom Produit'].astype(str).str.lower().str.strip()
-        produit_recherche = nom_produit.lower().strip()
+        df_clean['Nom Clean'] = df_clean['Nom Produit'].astype(str).str.lower().str.strip()
         
-        resultat = df_clean[df_clean['Nom Produit Clean'] == produit_recherche]
+        recherche = nom_produit.lower().strip()
+        condition = df_clean['Nom Clean'].str.contains(recherche, na=False)
+        resultat = df_clean[condition]
         
         if not resultat.empty:
-            row = resultat.iloc[0]
-            # Formatage propre sans virgules pour les normes locales
-            prix_formate = f"{row['Prix (FCFA)']:,}".replace(',', ' ')
-            return f"Produit: {row['Nom Produit']} | Statut: {row['Statut']} | Prix: {prix_formate} FCFA | Délai: {row['Délai de livraison']}"
+            reponses = []
+            for _, row in resultat.head(3).iterrows():
+                prix = f"{row['Prix (FCFA)']:,}".replace(',', ' ')
+                reponses.append(f"- {row['Nom Produit']} ({row['Catégorie']}) : {row['Statut']} | Prix : {prix} FCFA | Livraison : {row['Délai de livraison']}")
+            return "\n".join(reponses)
         else:
-            return f"Le produit '{nom_produit}' n'est pas répertorié dans le fichier Excel."
+            return f"Aucun équipement correspondant à '{nom_produit}' n'a été trouvé."
     except Exception as e:
-        return f"Erreur lors de la lecture du fichier Excel : {str(e)}"
+        return f"Erreur de lecture du catalogue : {str(e)}"
 
-# 4. Gestion de l'historique de discussion (Session State)
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Modèles de données Pantic
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str  # Géré par le frontend
 
-# Affichage des anciens messages de la session
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+class MessageSchema(BaseModel):
+    role: str
+    text: str
 
-# 5. Zone de saisie utilisateur (Interface Chat)
-if prompt := st.chat_input("Ex: Quel est le prix du Switch Catalyst 9300 ?"):
+class SessionSchema(BaseModel):
+    id: str
+    titre: str
+    updated_at: str
+
+# --- ROUTES DE L'API ---
+
+@app.get("/api/sessions", response_model=List[SessionSchema])
+def get_sessions():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, titre, updated_at FROM sessions ORDER BY updated_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "titre": r[1], "updated_at": r[2]} for r in rows]
+
+@app.get("/api/sessions/{session_id}/messages", response_model=List[MessageSchema])
+def get_session_messages(session_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT role, text FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"role": r[0], "text": r[1]} for r in rows]
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    now_str = datetime.now().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
     
-    # Afficher le message de l'utilisateur
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    # 1. Vérifier ou créer la session
+    cursor.execute("SELECT id FROM sessions WHERE id = ?", (req.session_id,))
+    if not cursor.fetchone():
+        # Titre temporaire basé sur le premier message
+        titre = req.message[:30] + "..." if len(req.message) > 30 else req.message
+        cursor.execute("INSERT INTO sessions (id, titre, updated_at) VALUES (?, ?, ?)", (req.session_id, titre, now_str))
+    else:
+        cursor.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now_str, req.session_id))
+        
+    # 2. Sauvegarder le message utilisateur
+    cursor.execute("INSERT INTO messages (session_id, role, text, timestamp) VALUES (?, 'user', ?, ?)", 
+                   (req.session_id, req.message, now_str))
+    conn.commit()
+    
+    # 3. Récupérer tout l'historique de cette session pour nourrir Gemini
+    cursor.execute("SELECT role, text FROM messages WHERE session_id = ? ORDER BY id ASC", (req.session_id,))
+    history_rows = cursor.fetchall()
+    conn.close()
+    
+    # Formater l'historique pour l'API Gemini
+    contents_history = []
+    for role, text in history_rows:
+        contents_history.append(
+            types.Content(role=role, parts=[types.Part.from_text(text=text)])
+        )
+        
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=contents_history,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "Tu es un ingénieur technico-commercial expert en équipements d'infrastructure IT et solutions WASH. "
+                    "Tu as accès au catalogue complet de l'entreprise via l'outil 'interroger_catalogue_excel'. "
+                    "Tu dois obligatoirement utiliser cet outil pour valider les prix, catégories et stocks.\n\n"
+                    
+                    "🧠 STRATÉGIE DE RECHERCHE INTELLIGENTE ET AUTONOME :\n"
+                    "- Nettoie la saisie utilisateur : extrais les mots-clés au singulier (ex: 'switchs' devient 'switch').\n"
+                    "- Si l'outil ne retourne rien pour une recherche précise, élargis immédiatement ta recherche en arrière-plan "
+                    "(ex: cherche uniquement la marque comme 'Cisco', ou la catégorie parente comme 'Pompe').\n"
+                    "- Rôle de conseiller : Si un produit est en rupture ou introuvable, propose activement une alternative "
+                    "proche présente dans le catalogue (ex: un autre modèle de routeur ou une autre station de traitement).\n"
+                    "- Si l'utilisateur pose une question sectorielle générale (ex: 'secteur WASH'), et que l'outil ne répond pas "
+                    "directement, utilise tes connaissances pour citer des exemples de produits que l'entreprise est susceptible de "
+                    "vendre, puis propose de faire une recherche précise pour lui.\n\n"
+                    
+                    "🚫 CONSIGNES STRICTES DE FORMATAGE (ZÉRO ASTÉRISQUE) :\n"
+                    "- Interdiction absolue d'utiliser des astérisques (* ou **) ou des caractères de hachage (#) dans tes réponses.\n"
+                    "- Pour mettre en valeur les titres, les noms de produits ou les sections importantes, utilise EXCLUSIVEMENT "
+                    "des lettres MAJUSCULES (ex: PRODUIT :, PRIX :, DISPONIBILITÉ :).\n"
+                    "- Pour structurer les listes et énumérations, utilise uniquement le tiret simple (-) suivi d'un espace.\n"
+                    "- Saute généreusement des lignes entre chaque section pour que la réponse soit aérée, lisible et "
+                    "parfaitement adaptée à un affichage professionnel en entreprise."
+                ),
+                tools=[interroger_catalogue_excel],
+                temperature=0.2
+            )
+        )
+        
+        ai_text = response.text
+        
+        # 4. Sauvegarder la réponse de l'IA en base
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO messages (session_id, role, text, timestamp) VALUES (?, 'model', ?, ?)", 
+                       (req.session_id, ai_text, now_str))
+        conn.commit()
+        conn.close()
+        
+        return {"response": ai_text}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# --- ROUTE COMPLÉMENTAIRE : TABLEAU DE BORD ADMIN ---
 
-    # Génération de la réponse de l'agent
-    with st.chat_message("assistant"):
-        with st.spinner("L'agent analyse le catalogue Excel..."):
-            try:
-                reponse = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=(
-                            "Tu es un agent d'automatisation d'inventaire B2B de haut niveau. "
-                            "Tu as un accès direct au catalogue via l'outil 'verifier_stock_et_prix'. "
-                            "Lorsqu'un client demande un tarif ou une disponibilité, utilise TOUJOURS l'outil. "
-                            "Réponds poliment, de manière concise et professionnelle en français."
-                        ),
-                        tools=[verifier_stock_et_prix],
-                        temperature=0.15
-                    )
-                )
-                
-                # Affichage du résultat final
-                st.markdown(reponse.text)
-                st.session_state.messages.append({"role": "assistant", "content": reponse.text})
-                
-            except ServerError:
-                # Interception propre de la surutilisation des serveurs Google (Erreur 503)
-                st.error("⚠️ Les serveurs de Google subissent une forte demande actuellement. Veuillez cliquer à nouveau sur Entrée pour renvoyer la demande.")
-            except Exception as e:
-                st.error(f"Une erreur inattendue est survenue : {str(e)}")
+@app.get("/api/admin/stats")
+def get_admin_stats():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # 1. Nombre total de sessions (discussions)
+        cursor.execute("SELECT COUNT(*) FROM sessions")
+        total_sessions = cursor.fetchone()[0]
+        
+        # 2. Nombre total de messages échangés
+        cursor.execute("SELECT COUNT(*) FROM messages")
+        total_messages = cursor.fetchone()[0]
+        
+        # 3. Répartition Utilisateur vs Agent IA
+        cursor.execute("SELECT role, COUNT(*) FROM messages GROUP BY role")
+        role_rows = cursor.fetchall()
+        role_breakdown = {r[0]: r[1] for r in role_rows}
+        
+        # 4. Volume d'activité journalier (Requêtes journalières - Limité aux 10 derniers jours)
+        # On découpe l'horodatage ISO pour ne garder que la date (YYYY-MM-DD)
+        cursor.execute("""
+            SELECT SUBSTR(timestamp, 1, 10) as date_jour, COUNT(*) as qte 
+            FROM messages 
+            WHERE role = 'user'
+            GROUP BY date_jour 
+            ORDER BY date_jour DESC 
+            LIMIT 10
+        """)
+        daily_rows = cursor.fetchall()
+        daily_stats = [{"date": r[0], "count": r[1]} for r in daily_rows]
+        
+        conn.close()
+        
+        return {
+            "total_sessions": total_sessions,
+            "total_messages": total_messages,
+            "user_messages_count": role_breakdown.get("user", 0),
+            "bot_messages_count": role_breakdown.get("model", 0),
+            "daily_stats": daily_stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur d'extraction des stats : {str(e)}")

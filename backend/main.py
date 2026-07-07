@@ -52,8 +52,7 @@ def init_db():
 
 init_db()
 
-# Initialisation du client Gemini (Assure-toi que GEMINI_API_KEY est dans ton .env)
-# Initialisation sécurisée du client Gemini pour Hugging Face
+# Initialisation du client Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
@@ -88,10 +87,10 @@ def interroger_catalogue_excel(nom_produit: str) -> str:
     except Exception as e:
         return f"Erreur de lecture du catalogue : {str(e)}"
 
-# Modèles de données Pantic
+# Modèles de données Pydantic
 class ChatRequest(BaseModel):
     message: str
-    session_id: str  # Géré par le frontend
+    session_id: str
 
 class MessageSchema(BaseModel):
     role: str
@@ -133,35 +132,36 @@ def chat_endpoint(req: ChatRequest):
 
     now_str = datetime.now().isoformat()
     conn = sqlite3.connect(DB_PATH)
-    # ... (le reste de ton code actuel reste strictement inchangé)
+    cursor = conn.cursor() # 💡 LA CORRECTION EST ICI : Initialisation du curseur ajoutée !
     
-    # 1. Vérifier ou créer la session
-    cursor.execute("SELECT id FROM sessions WHERE id = ?", (req.session_id,))
-    if not cursor.fetchone():
-        # Titre temporaire basé sur le premier message
-        titre = req.message[:30] + "..." if len(req.message) > 30 else req.message
-        cursor.execute("INSERT INTO sessions (id, titre, updated_at) VALUES (?, ?, ?)", (req.session_id, titre, now_str))
-    else:
-        cursor.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now_str, req.session_id))
-        
-    # 2. Sauvegarder le message utilisateur
-    cursor.execute("INSERT INTO messages (session_id, role, text, timestamp) VALUES (?, 'user', ?, ?)", 
-                   (req.session_id, req.message, now_str))
-    conn.commit()
-    
-    # 3. Récupérer tout l'historique de cette session pour nourrir Gemini
-    cursor.execute("SELECT role, text FROM messages WHERE session_id = ? ORDER BY id ASC", (req.session_id,))
-    history_rows = cursor.fetchall()
-    conn.close()
-    
-    # Formater l'historique pour l'API Gemini
-    contents_history = []
-    for role, text in history_rows:
-        contents_history.append(
-            types.Content(role=role, parts=[types.Part.from_text(text=text)])
-        )
-        
     try:
+        # 1. Vérifier ou créer la session
+        cursor.execute("SELECT id FROM sessions WHERE id = ?", (req.session_id,))
+        if not cursor.fetchone():
+            titre = req.message[:30] + "..." if len(req.message) > 30 else req.message
+            cursor.execute("INSERT INTO sessions (id, titre, updated_at) VALUES (?, ?, ?)", (req.session_id, titre, now_str))
+        else:
+            cursor.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now_str, req.session_id))
+            
+        # 2. Sauvegarder le message utilisateur
+        cursor.execute("INSERT INTO messages (session_id, role, text, timestamp) VALUES (?, 'user', ?, ?)", 
+                       (req.session_id, req.message, now_str))
+        conn.commit()
+        
+        # 3. Récupérer tout l'historique de cette session pour nourrir Gemini
+        cursor.execute("SELECT role, text FROM messages WHERE session_id = ? ORDER BY id ASC", (req.session_id,))
+        history_rows = cursor.fetchall()
+        
+        # On ferme la connexion ici car on a fini les lectures/écritures pour le moment
+        conn.close()
+        
+        # Formater l'historique pour l'API Gemini
+        contents_history = []
+        for role, text in history_rows:
+            contents_history.append(
+                types.Content(role=role, parts=[types.Part.from_text(text=text)])
+            )
+            
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=contents_history,
@@ -169,8 +169,7 @@ def chat_endpoint(req: ChatRequest):
                 system_instruction=(
                     "Tu es un ingénieur technico-commercial expert en équipements d'infrastructure IT et solutions WASH. "
                     "Tu as accès au catalogue complet de l'entreprise via l'outil 'interroger_catalogue_excel'. "
-                    "Tu dois obligatoirement utiliser cet outil pour valider les prix, catégories et stocks.\n\n"
-                    
+                    "Tu doit obligatoirement utiliser cet outil pour valider les prix, catégories et stocks.\n\n"
                     "🧠 STRATÉGIE DE RECHERCHE INTELLIGENTE ET AUTONOME :\n"
                     "- Nettoie la saisie utilisateur : extrais les mots-clés au singulier (ex: 'switchs' devient 'switch').\n"
                     "- Si l'outil ne retourne rien pour une recherche précise, élargis immédiatement ta recherche en arrière-plan "
@@ -180,7 +179,6 @@ def chat_endpoint(req: ChatRequest):
                     "- Si l'utilisateur pose une question sectorielle générale (ex: 'secteur WASH'), et que l'outil ne répond pas "
                     "directement, utilise tes connaissances pour citer des exemples de produits que l'entreprise est susceptible de "
                     "vendre, puis propose de faire une recherche précise pour lui.\n\n"
-                    
                     "🚫 CONSIGNES STRICTES DE FORMATAGE (ZÉRO ASTÉRISQUE) :\n"
                     "- Interdiction absolue d'utiliser des astérisques (* ou **) ou des caractères de hachage (#) dans tes réponses.\n"
                     "- Pour mettre en valeur les titres, les noms de produits ou les sections importantes, utilise EXCLUSIVEMENT "
@@ -207,6 +205,11 @@ def chat_endpoint(req: ChatRequest):
         return {"response": ai_text}
         
     except Exception as e:
+        # En cas de crash au milieu, on s'assure de fermer la connexion si elle est restée ouverte
+        try:
+            conn.close()
+        except:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
     
 # --- ROUTE COMPLÉMENTAIRE : TABLEAU DE BORD ADMIN ---
@@ -231,7 +234,6 @@ def get_admin_stats():
         role_breakdown = {r[0]: r[1] for r in role_rows}
         
         # 4. Volume d'activité journalier (Requêtes journalières - Limité aux 10 derniers jours)
-        # On découpe l'horodatage ISO pour ne garder que la date (YYYY-MM-DD)
         cursor.execute("""
             SELECT SUBSTR(timestamp, 1, 10) as date_jour, COUNT(*) as qte 
             FROM messages 

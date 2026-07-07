@@ -1,5 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Sun, Moon, Loader2, Menu, X, PlusCircle, MessageSquare, BarChart3, MessageCircle, Activity, Calendar, Lock } from 'lucide-react';
+import { Send, Bot, User, Sun, Moon, Loader2, Menu, X, PlusCircle, MessageSquare, BarChart3, Loader2 as LoadIcon, Calendar, Lock } from 'lucide-react';
+
+// 🌐 Centralisation de l'URL API et de la sécurité pour la production Vercel
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const SECRET_ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || "Admin@2026";
 
 export default function Chatbot() {
   const [isDark, setIsDark] = useState(true);
@@ -11,8 +15,6 @@ export default function Chatbot() {
   const [inputPassword, setInputPassword] = useState('');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [authError, setAuthError] = useState(false);
-
-  const SECRET_ADMIN_CODE = "Admin@2026"; // 🔑 Ton code secret à modifier ici
 
   const [sessions, setSessions] = useState([]);
   const [currentSessionId, setCurrentSessionId] = useState('');
@@ -33,7 +35,7 @@ export default function Chatbot() {
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/sessions');
+      const res = await fetch(`${API_BASE_URL}/api/sessions`);
       if (res.ok) {
         const data = await res.json();
         setSessions(data);
@@ -50,7 +52,7 @@ export default function Chatbot() {
 
   const fetchAdminStats = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/admin/stats');
+      const res = await fetch(`${API_BASE_URL}/api/admin/stats`);
       if (res.ok) {
         const data = await res.json();
         setStats(data);
@@ -79,7 +81,7 @@ export default function Chatbot() {
     setSidebarOpen(false);
     setIsAdminView(false); 
     try {
-      const res = await fetch(`http://localhost:8000/api/sessions/${sessionId}/messages`);
+      const res = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/messages`);
       if (res.ok) {
         const data = await res.json();
         setMessages(data);
@@ -96,13 +98,10 @@ export default function Chatbot() {
     setIsAdminView(false);
   };
 
-  // Gestion du verrouillage / déverrouillage de l'espace Admin
   const handleAdminToggleClick = () => {
     if (isAdminView) {
-      // Si on y est déjà, on en sort juste
       setIsAdminView(false);
     } else {
-      // Si on n'est pas encore authentifié, on demande le code
       if (!isAdminAuthenticated) {
         setShowAuthModal(true);
       } else {
@@ -136,7 +135,7 @@ export default function Chatbot() {
     setMessages(updated);
 
     try {
-      const res = await fetch('http://localhost:8000/api/chat', {
+      const res = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userText, session_id: currentSessionId }),
@@ -146,18 +145,18 @@ export default function Chatbot() {
       setMessages((prev) => [...prev, { role: 'model', text: data.response }]);
       fetchSessions();
     } catch (error) {
-      setMessages((prev) => [...prev, { role: 'model', text: "ERREUR : Connexion perdue." }]);
+      setMessages((prev) => [...prev, { role: 'model', text: "ERREUR : Connexion au serveur perdue." }]);
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className={`flex h-screen w-full transition-colors duration-300 ${isDark ? 'bg-[#050b14] text-slate-100' : 'bg-slate-50 text-slate-800'}`}>
+    <div className={`flex h-screen w-full transition-colors duration-300 ${isDark ? 'bg-[#050b14]' : 'bg-slate-50 text-slate-800'}`}>
       
       {/* SIDEBAR */}
       <aside className={`fixed inset-y-0 left-0 z-40 w-72 transform border-r transition-transform duration-300 md:static md:translate-x-0 ${
-        isDark ? 'bg-[#0a1424] border-slate-800' : 'bg-white border-slate-200'
+        isDark ? 'bg-[#0a1424] border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800'
       } ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         
         <div className="flex flex-col h-full p-4">
@@ -200,7 +199,7 @@ export default function Chatbot() {
         
         {/* HEADER BARRE HAUTE */}
         <header className={`flex items-center justify-between px-4 py-3 border-b ${
-          isDark ? 'bg-[#0a1424]/80 border-slate-800' : 'bg-white border-slate-200 shadow-sm'
+          isDark ? 'bg-[#0a1424]/80 border-slate-800 text-slate-100' : 'bg-white border-slate-200 shadow-sm text-slate-800'
         }`}>
           <div className="flex items-center gap-3">
             <button onClick={() => setSidebarOpen(true)} className="p-2 md:hidden rounded-lg hover:bg-slate-500/10">
@@ -216,7 +215,6 @@ export default function Chatbot() {
           </div>
           
           <div className="flex items-center gap-2">
-            {/* BOUTON FLUX ADAPTÉ AVEC VÉROUILLAGE VISUEL */}
             <button 
               onClick={handleAdminToggleClick}
               className={`p-2 rounded-xl border flex items-center gap-2 text-xs font-medium transition-all ${
@@ -238,9 +236,8 @@ export default function Chatbot() {
           </div>
         </header>
 
-        {/* AFFICHAGE EN FONCTION DU MODE DE VISION */}
+        {/* CONTENU MODES CHAT / ADMIN */}
         {isAdminView && isAdminAuthenticated ? (
-          /* ================= PANNEAU DES STATISTIQUES SECRÈTES ================= */
           <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
             <div className="max-w-5xl mx-auto space-y-6">
               <div className="flex items-center justify-between">
@@ -299,7 +296,6 @@ export default function Chatbot() {
             </div>
           </div>
         ) : (
-          /* ================= INTERFACE DU CHAT CLASSIQUE POUR L'UTILISATEUR ================= */
           <>
             <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
               {messages.length === 0 ? (
@@ -361,10 +357,10 @@ export default function Chatbot() {
         )}
       </div>
 
-      {/* ================= MODAL RIDEAU DE SÉCURITÉ AUTHENTIFICATION ================= */}
+      {/* MODAL AUTHENTIFICATION */}
       {showAuthModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-md p-6 rounded-2xl border shadow-xl ${isDark ? 'bg-[#0a1424] border-slate-800' : 'bg-white border-slate-200'}`}>
+          <div className={`w-full max-w-md p-6 rounded-2xl border shadow-xl ${isDark ? 'bg-[#0a1424] border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800'}`}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2 text-blue-500 font-bold text-sm">
                 <Lock className="w-4 h-4" /> Zone d'administration sécurisée
@@ -375,7 +371,7 @@ export default function Chatbot() {
             </div>
             
             <p className="text-xs opacity-60 mb-4 leading-relaxed">
-              Veuillez saisir le code d'accès administrateur pour consulter le flux d'activité en direct et l'analyse journalière des données.
+              Veuillez saisir le code d'accès administrateur pour consulter le flux d'activité en direct.
             </p>
 
             <form onSubmit={verifyAdminPassword} className="space-y-4">
@@ -391,7 +387,7 @@ export default function Chatbot() {
               />
               
               {authError && (
-                <p className="text-xs font-semibold text-red-500">❌ Code d'accès incorrect. Veuillez réessayer.</p>
+                <p className="text-xs font-semibold text-red-500">❌ Code d'accès incorrect.</p>
               )}
 
               <div className="flex gap-2 justify-end text-xs font-semibold pt-2">
